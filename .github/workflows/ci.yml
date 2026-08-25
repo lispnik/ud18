@@ -1,0 +1,104 @@
+name: CI
+
+# Runs the portable protocol suite: framing, checksum, measurement decoding,
+# the command set, and the captured frames in captures/. Hardware-free -- the
+# device layer needs Linux/BlueZ and a meter, and is not exercised here.
+#
+# Two checkouts, because the BLE stack lives in its own repository and this
+# project depends on it as a sibling. See BLE_DIR in the Makefile.
+#
+# lispnik/ble is public, so the job's own token can check it out and no
+# secret is needed -- which also means this works on pull requests from
+# forks, where secrets are not available.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    # aarch64 as well as x86_64: this project runs on a Raspberry Pi, and the
+    # BLE layer underneath it is foreign struct layouts and octet order --
+    # exactly what can differ by architecture. Both runners are native.
+    name: linux/${{ matrix.arch }} · sbcl
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out ud18
+        uses: actions/checkout@v4
+        with:
+          path: ud18
+
+      - name: Check out ble
+        uses: actions/checkout@v4
+        with:
+          repository: lispnik/ble
+          path: ble
+          
+      - name: Install SBCL
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sbcl
+
+      - name: Cache ocicl
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.local/bin
+            ~/.local/share/ocicl
+          key: ocicl-${{ matrix.arch }}-v1
+
+      - name: Install ocicl
+        run: |
+          if ! [ -x "$HOME/.local/bin/ocicl" ]; then
+            git clone --depth 1 --quiet https://github.com/ocicl/ocicl.git /tmp/ocicl
+            ( cd /tmp/ocicl && sbcl --non-interactive --load setup.lisp >/dev/null )
+            "$HOME/.local/bin/ocicl" setup >/dev/null
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ud18/ocicl
+            ble/ocicl
+          key: deps-${{ matrix.arch }}-${{ hashFiles('ud18/ocicl.csv', 'ble/ocicl.csv') }}
+
+      - name: Restore dependencies
+        run: |
+          ( cd ble && ocicl install )
+          ( cd ud18 && ocicl install )
+
+      - name: Run tests
+        working-directory: ud18
+        run: make test BLE_DIR=../ble
+
+      # The CLI is not covered by the suite -- every subcommand but `decode'
+      # needs a radio -- but it must still build, and building it is what
+      # catches a call into `ble' whose signature moved underneath us. That
+      # has happened twice.
+      - name: Build the binary
+        working-directory: ud18
+        run: make BLE_DIR=../ble
+
+      # tools/ is outside the ASDF graph, so nothing else here compiles it.
+      # That is how probe-commands.lisp accumulated three separate breakages
+      # unnoticed -- a dead source registry, a symbol that stopped being
+      # external, and an accessor renamed out from under it. Loading it is
+      # enough to catch all three.
+      - name: Load the tools
+        working-directory: ud18
+        run: |
+          for f in tools/*.lisp; do
+            echo "==> $f"
+            BLE_DIR=../../ble sbcl --non-interactive --no-userinit --no-sysinit \
+              --load "$f" --eval '(sb-ext:exit)'
+          done

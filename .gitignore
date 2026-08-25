@@ -1,0 +1,10 @@
+# Built binary: embeds the SBCL core (~45 MB) and is platform-specific.
+bin/
+*.fasl
+
+# Vendored dependencies, restored with `ocicl install`. ocicl.csv pins them
+# and IS tracked; the sources themselves are not.
+ocicl/
+
+# captures/ is deliberately NOT ignored: captures/ud18-2026-08-19.hex is the
+# fixture the test suite asserts against, and the suite fails without it.
