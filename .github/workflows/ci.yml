@@ -99,6 +99,6 @@ jobs:
         run: |
           for f in tools/*.lisp; do
             echo "==> $f"
-            BLE_DIR=../../ble sbcl --non-interactive --no-userinit --no-sysinit \
+            BLE_DIR=../ble sbcl --non-interactive --no-userinit --no-sysinit \
               --load "$f" --eval '(sb-ext:exit)'
           done
