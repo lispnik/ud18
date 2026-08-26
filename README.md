@@ -2,6 +2,10 @@
 
 [![CI](https://github.com/lispnik/ud18/actions/workflows/ci.yml/badge.svg)](https://github.com/lispnik/ud18/actions/workflows/ci.yml)
 
+<p align="center">
+  <img src="ud18.png" alt="An ATORCH UD18 USB/DC power meter, showing 36.00 V, 5.100 A and 183.6 W on its colour display" width="420">
+</p>
+
 A Common Lisp library and command-line tool for the **ATORCH UD18** USB/DC
 power meter over Bluetooth LE: scan for it, connect, and decode its
 measurement stream.
