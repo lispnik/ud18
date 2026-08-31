@@ -13,6 +13,7 @@
          (fmt   (clingon:getopt cmd :format))
          (path  (clingon:getopt cmd :output))
          (append-p (clingon:getopt cmd :append))
+         (utc   (clingon:getopt cmd :utc))
          (count 0))
     (with-open-file (out path :direction :output :element-type 'character
                               :if-exists (if append-p :append :supersede)
@@ -32,7 +33,7 @@
            conn
            (lambda (r)
              (incf count)
-             (emit-reading out r fmt :timestamp (iso-timestamp) :mac mac)
+             (emit-reading out r fmt :timestamp (iso-timestamp :utc utc) :mac mac)
              ;; Flush every frame: a recording session normally ends with a
              ;; Ctrl-C or a pulled plug, and a buffered tail would be lost.
              (force-output out)
@@ -48,8 +49,9 @@
                        ;; treats everything after a '#' as a comment, so the
                        ;; file still reads back cleanly.
                        (when (string= fmt "hex")
-                         (format out "# undecodable (~A): ~A~%"
-                                 c (hex-string raw :separator " "))
+                         (format out "# ~A undecodable (~A): ~A~%"
+                                 (iso-timestamp :utc utc) c
+                                 (hex-string raw :separator " "))
                          (force-output out)))))))
     (format *error-output* "~&Wrote ~D reading~:P to ~A~%" count path)))
 
@@ -68,6 +70,7 @@
                          :description "Output format"
                          :long-name "format" :items '("jsonl" "csv" "text" "hex")
                          :initial-value "jsonl" :key :format)
+    (utc/option)
     (clingon:make-option :flag
                          :description "Append to the output file instead of truncating it"
                          :long-name "append" :key :append))))

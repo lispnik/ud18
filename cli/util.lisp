@@ -53,15 +53,129 @@ that is not a hex digit is treated as a separator."
         (setf (aref out i)
               (parse-integer clean :start (* i 2) :end (+ (* i 2) 2) :radix 16))))))
 
-(defun iso-timestamp (&optional ms-since-epoch)
-  "ISO-8601 UTC timestamp, YYYY-MM-DDTHH:MM:SS.mmmZ, for MS-SINCE-EPOCH or now."
-  (let ((ms (or ms-since-epoch
-                (multiple-value-bind (s us) (sb-ext:get-time-of-day)
-                  (+ (* s 1000) (floor us 1000))))))
-    (multiple-value-bind (s millis) (truncate ms 1000)
-      (multiple-value-bind (sec min hr day mon yr) (decode-universal-time (+ s 2208988800) 0)
-        (format nil "~4,'0D-~2,'0D-~2,'0DT~2,'0D:~2,'0D:~2,'0D.~3,'0DZ"
-                yr mon day hr min sec millis)))))
+(defconstant +unix-epoch-universal-time+ 2208988800
+  "Universal time at 1970-01-01T00:00:00Z, the offset between CL's epoch and
+the Unix one.")
+
+(defun current-ms ()
+  "Milliseconds since the Unix epoch, now."
+  (multiple-value-bind (s us) (sb-ext:get-time-of-day)
+    (+ (* s 1000) (floor us 1000))))
+
+(defun utc-offset-minutes (universal-time)
+  "Minutes east of UTC for UNIVERSAL-TIME in the host's local zone.
+
+DECODE-UNIVERSAL-TIME hands back the zone as hours *west* of Greenwich and
+in *standard* time, reporting daylight saving separately rather than folding
+it in -- so the hour it also returns is already shifted for DST while the
+zone is not. Subtracting the daylight hour is what reconciles the two; skip
+it and every timestamp taken in summer is off by one."
+  (multiple-value-bind (sec min hr day mon yr dow daylight-p zone)
+      (decode-universal-time universal-time)
+    (declare (ignore sec min hr day mon yr dow))
+    (round (* -60 (- zone (if daylight-p 1 0))))))
+
+(defun iso-timestamp (&key ms utc)
+  "ISO-8601 timestamp for MS milliseconds since the Unix epoch, or for now.
+
+With UTC, the Zulu form: YYYY-MM-DDTHH:MM:SS.mmmZ. Otherwise the host's
+local time carrying its numeric offset, YYYY-MM-DDTHH:MM:SS.mmm+HH:MM.
+
+Both are ISO-8601 and both name the same instant. What this will not emit is
+a local time with no offset on it -- that is the one shape that cannot be
+placed on a real timeline afterwards, and a measurement log is exactly where
+that ambiguity does the most damage."
+  (let ((ms (or ms (current-ms))))
+    (multiple-value-bind (secs millis) (floor ms 1000)
+      (let* ((ut (+ secs +unix-epoch-universal-time+))
+             (offset (if utc 0 (utc-offset-minutes ut))))
+        ;; Decode at zone 0 having shifted by the offset: local wall-clock
+        ;; time is simply UTC plus the offset, and going through zone 0
+        ;; keeps one code path for both forms.
+        (multiple-value-bind (sec min hr day mon yr)
+            (decode-universal-time (+ ut (* offset 60)) 0)
+          (format nil "~4,'0D-~2,'0D-~2,'0DT~2,'0D:~2,'0D:~2,'0D.~3,'0D~A"
+                  yr mon day hr min sec millis
+                  (if utc
+                      "Z"
+                      (format nil "~A~2,'0D:~2,'0D"
+                              (if (minusp offset) "-" "+")
+                              (floor (abs offset) 60)
+                              (mod (abs offset) 60)))))))))
+
+(defun zone-marker-position (s)
+  "Index of the zone designator in S -- the 'Z', '+' or '-' that ends an
+ISO-8601 timestamp -- searched from past the date, where a '-' is a
+separator rather than a sign."
+  (position-if (lambda (c) (member c '(#\Z #\z #\+ #\-))) s :start 19))
+
+(defun iso-timestamp-p (string)
+  "STRING trimmed when it has the shape ISO-TIMESTAMP writes, else NIL.
+
+A shape check, not a parse: the point is only to tell a timestamp comment
+apart from the other things a '#' comment in a capture may hold -- an
+undecodable-frame note, or a line someone typed -- before handing it on as
+a measurement time. Anything that does not look like one is left alone.
+
+Both zone forms pass, Zulu and a numeric offset, because both are what this
+tool writes and a capture may hold either."
+  (let ((s (string-trim '(#\Space #\Tab #\Return) string)))
+    (and (>= (length s) 20)
+         (char= (char s 4) #\-) (char= (char s 7) #\-)
+         (char= (char s 10) #\T)
+         (char= (char s 13) #\:) (char= (char s 16) #\:)
+         (loop for i in '(0 1 2 3 5 6 8 9 11 12 14 15 17 18)
+               always (digit-char-p (char s i)))
+         (let ((mark (zone-marker-position s)))
+           (and mark
+                (if (member (char s mark) '(#\Z #\z))
+                    (= (length s) (1+ mark))
+                    ;; +HH:MM -- an offset with no minutes field is legal
+                    ;; ISO-8601 but is not something this tool emits, and
+                    ;; accepting it would mean guessing at the rest.
+                    (and (= (length s) (+ mark 6))
+                         (char= (char s (+ mark 3)) #\:)
+                         (loop for i in (list (+ mark 1) (+ mark 2)
+                                              (+ mark 4) (+ mark 5))
+                               always (digit-char-p (char s i)))))))
+         s)))
+
+(defun parse-iso-timestamp (string)
+  "Milliseconds since the Unix epoch for STRING, or NIL if it is not a
+timestamp of the shape ISO-TIMESTAMP-P accepts.
+
+The offset is subtracted rather than ignored, which is the whole point: a
+capture recorded in one zone and re-presented in another has to name the
+same instant afterwards, or --utc would be rewriting history instead of
+restating it."
+  (let ((s (iso-timestamp-p string)))
+    (when s
+      (flet ((num (a b) (parse-integer s :start a :end b)))
+        (let* ((mark   (zone-marker-position s))
+               (millis (if (and (> mark 20) (char= (char s 19) #\.))
+                           (num 20 (min mark 23))
+                           0))
+               (offset (if (member (char s mark) '(#\Z #\z))
+                           0
+                           (* (if (char= (char s mark) #\-) -1 1)
+                              (+ (* 60 (num (+ mark 1) (+ mark 3)))
+                                 (num (+ mark 4) (+ mark 6)))))))
+          (+ (* 1000 (- (encode-universal-time (num 17 19) (num 14 16) (num 11 13)
+                                               (num 8 10) (num 5 7) (num 0 4)
+                                               0)
+                        +unix-epoch-universal-time+
+                        (* offset 60)))
+             millis))))))
+
+(defun present-timestamp (timestamp &key utc)
+  "TIMESTAMP as recorded, or restated in UTC when UTC.
+
+Restated, not relabelled: an unparseable timestamp is passed through
+untouched rather than stamped with a 'Z' it has not earned."
+  (if (and utc timestamp)
+      (let ((ms (parse-iso-timestamp timestamp)))
+        (if ms (iso-timestamp :ms ms :utc t) timestamp))
+      timestamp))
 
 (defmacro with-interrupt-handler ((&key (message "~&Interrupted.~%")) &body body)
   "Run BODY with Ctrl-C trapped: print MESSAGE and fall through."
@@ -94,6 +208,12 @@ while both USB dongles report nothing at all."
 ;;; monitor, record and send all open the same kind of connection, so the
 ;;; options that describe one live here rather than in whichever subcommand
 ;;; happened to need them first.
+
+(defun utc/option ()
+  "The --utc flag, shared by every subcommand that puts a time on a reading."
+  (clingon:make-option :flag
+                       :description "Timestamp in UTC (...Z) instead of local time with a UTC offset"
+                       :long-name "utc" :key :utc))
 
 (defun connection/options ()
   "Options shared by every subcommand that opens a connection."

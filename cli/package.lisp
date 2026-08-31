@@ -17,8 +17,12 @@
            #:reading-text
            #:reading-jsonl
            #:reading-csv
+           #:reading-hex
            #:csv-header
            #:iso-timestamp
+           #:iso-timestamp-p
+           #:parse-iso-timestamp
+           #:present-timestamp
            #:hex-string
            #:hexdump
            #:undecodable-report

@@ -18,10 +18,18 @@
             (parse-integer clean :start (* i 2) :end (+ (* i 2) 2) :radix 16)))))
 
 (defun capture-frames ()
+  "Every frame in the capture, comments stripped.
+
+The strip is not decoration. HEX->OCTETS keeps hex digits and drops the
+rest, so a line carrying the arrival-time comment `record --format hex'
+now writes would silently fold the digits of the timestamp into the frame
+-- a fixture that parses, decodes, and is wrong. Cut at the '#' first."
   (with-open-file (in *capture-path*)
     (loop for line = (read-line in nil nil)
           while line
-          for text = (string-trim '(#\Space #\Tab #\Return) line)
+          for hash = (position #\# line)
+          for text = (string-trim '(#\Space #\Tab #\Return)
+                                  (if hash (subseq line 0 hash) line))
           when (plusp (length text)) collect (hex->octets text))))
 
 ;;; One frame, spelled out, so a scaling change has to be deliberate.

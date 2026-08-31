@@ -90,16 +90,43 @@ the machine you intend to run it on.
 
 ```sh
 ud18 scan --dev 0 --seconds 8
-ud18 monitor -m CB:3B:7F:8E:75:A3 --seconds 30 --timestamps
+ud18 monitor -m CB:3B:7F:8E:75:A3 --seconds 30 --timestamps --utc
 ud18 record  -m CB:3B:7F:8E:75:A3 -o captures/run.jsonl
 ud18 record  -m CB:3B:7F:8E:75:A3 -o captures/run.hex --format hex
 ud18 decode  captures/run.hex --format csv > run.csv
 ud18 decode  --hex FF5501030004B000001C00B6A1...
 ```
 
-`--format hex` writes the raw frames and nothing else, and `decode` reads
-exactly that back, so a recording can always be re-decoded later — useful
-while any field below is still marked provisional.
+### Timestamps
+
+Every reading carries the time it arrived, as ISO-8601. `jsonl` and `csv`
+put it in a `ts` field; `--format hex` writes the raw frame and parks the
+timestamp behind a `#` comment, so the capture is still exactly the bytes
+and `decode` still reads it back — with the original arrival times, not the
+time you got around to decoding it.
+
+The default is local time carrying its numeric offset; `--utc` gives the
+Zulu form. Both name the same instant, and both are ISO-8601:
+
+```sh
+ud18 record -m CB:3B:7F:8E:75:A3 -o run.hex --format hex   # ...T14:03:11.250-05:00
+ud18 record -m CB:3B:7F:8E:75:A3 -o run.hex --format hex --utc  # ...T19:03:11.250Z
+ud18 decode run.hex --format csv --utc                     # restate a capture in UTC
+```
+
+`--utc` on `decode` converts what the capture recorded rather than
+relabelling it, so a run logged in one zone and read in another still lines
+up against a run logged in the other. What none of this will emit is a local
+time with no offset on it — that is the one shape that cannot be put back on
+a real timeline later, which in a measurement log is where the ambiguity
+costs most.
+
+`monitor --timestamps` governs the text view only, where the column costs
+terminal width; the machine-readable formats are stamped whether you ask or
+not. And a frame decoded from somewhere that never recorded a time — `--hex`
+on the command line, or a capture made by other means — comes out with
+`"ts":null` in JSONL and an empty first CSV column, rather than being
+backfilled with the current time.
 
 ## Protocol
 
@@ -480,7 +507,8 @@ $ ud18 decode --hex ff5501030004b0...3c
 `monitor` and `record` print the same dump on stderr as frames arrive, so a
 recording is never quietly short. `record --format hex` additionally writes
 the raw bytes into the capture behind a `#` comment, which `decode` skips —
-so a hex capture stays lossless even for frames it cannot read.
+so a hex capture stays lossless even for frames it cannot read, and the
+note is timestamped like every other line.
 
 ## Library
 

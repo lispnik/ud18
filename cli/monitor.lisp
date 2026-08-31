@@ -8,6 +8,7 @@
          (secs (clingon:getopt cmd :seconds))
          (fmt  (clingon:getopt cmd :format))
          (stamp (clingon:getopt cmd :timestamps))
+         (utc  (clingon:getopt cmd :utc))
          (dump (clingon:getopt cmd :hexdump))
          (count 0))
     (format *error-output* "Connecting to ~A via hci~D...~%" mac dev)
@@ -22,8 +23,14 @@
          conn
          (lambda (r)
            (incf count)
-           (emit-reading *standard-output* r fmt
-                         :timestamp (when stamp (iso-timestamp)))
+           ;; Stamped here, where the frame has just arrived, and passed to
+           ;; every machine-readable format unconditionally: a jsonl or csv
+           ;; row whose time depends on whether someone remembered a flag is
+           ;; a row that cannot be joined against anything. --timestamps
+           ;; governs the text view only, where the column costs width.
+           (let ((ts (iso-timestamp :utc utc)))
+             (emit-reading *standard-output* r fmt
+                           :timestamp (if (string= fmt "text") (and stamp ts) ts)))
            (when dump
              (write-string (hexdump (ud18:reading-raw r) :indent "   ")))
            (force-output))
@@ -48,8 +55,9 @@
                          :long-name "format" :items '("text" "jsonl" "csv" "hex")
                          :initial-value "text" :key :format)
     (clingon:make-option :flag
-                         :description "Prefix each line with an ISO-8601 UTC timestamp"
+                         :description "Prefix each text line with an ISO-8601 UTC timestamp (jsonl, csv and hex always carry one)"
                          :short-name #\t :long-name "timestamps" :key :timestamps)
+    (utc/option)
     (clingon:make-option :flag
                          :description "Hexdump every frame in full, not just the undecoded tail"
                          :short-name #\x :long-name "hexdump" :key :hexdump))))

@@ -7,6 +7,15 @@
 ;;; the provisional ones under names that say what they are. The raw frame
 ;;; rides along in the JSONL so a capture stays re-decodable if a field is
 ;;; later relabelled: nothing here is lossy.
+;;;
+;;; A reading with no time on it is a reading you cannot correlate with
+;;; anything else, so every format carries one -- hex included, behind the
+;;; same '#' comment `decode' already skips, which is also where `decode'
+;;; reads it back from. TIMESTAMP is the moment the frame arrived and is
+;;; passed in by the caller; when it is genuinely unknown -- decoding a file
+;;; that never recorded one -- the field is empty rather than filled with
+;;; the current time, which would be a measurement time that is off by
+;;; however long the capture sat on disk.
 
 (defun reading-text (r &key timestamp)
   "One aligned line per reading, for a terminal.
@@ -40,11 +49,11 @@ discovery, and it should not need anyone to go looking for it."
 
 Hand-rolled rather than pulled from a JSON library: the schema is fixed and
 flat, and the binary should not grow a dependency for eight numbers."
-  (format nil "{\"ts\":\"~A\"~@[,\"mac\":\"~A\"~],\"volts\":~A,\"amps\":~A,\"watts\":~A,~
+  (format nil "{\"ts\":~A~@[,\"mac\":\"~A\"~],\"volts\":~A,\"amps\":~A,\"watts\":~A,~
 \"capacity_mah\":~D,\"energy_wh\":~A,\"d_minus_volts\":~A,\"d_plus_volts\":~A,~
 \"temperature_c\":~D,\"run_seconds\":~D,\"run_time\":\"~A\",\"backlight_seconds\":~D,~
 \"undecoded\":\"~A\",\"raw\":\"~A\"}"
-          (or timestamp (iso-timestamp)) mac
+          (if timestamp (format nil "\"~A\"" timestamp) "null") mac
           (json-float (ud18:reading-volts r))
           (json-float (ud18:reading-amps r))
           (json-float (ud18:reading-watts r))
@@ -66,7 +75,7 @@ d_minus_volts,d_plus_volts,temperature_c,run_seconds,backlight_seconds,undecoded
 
 (defun reading-csv (r &key timestamp mac)
   (format nil "~A~@[,~A~],~A,~A,~A,~D,~A,~A,~A,~D,~D,~D,~A,~A"
-          (or timestamp (iso-timestamp)) mac
+          (or timestamp "") mac
           (json-float (ud18:reading-volts r))
           (json-float (ud18:reading-amps r))
           (json-float (ud18:reading-watts r))
@@ -80,11 +89,22 @@ d_minus_volts,d_plus_volts,temperature_c,run_seconds,backlight_seconds,undecoded
           (hex-string (ud18:reading-undecoded r))
           (hex-string (ud18:reading-raw r))))
 
+(defun reading-hex (r &key timestamp)
+  "The raw frame as spaced hex, with the arrival time behind a '#'.
+
+The comment is how a hex capture gets a clock without ceasing to be a hex
+capture: `decode' already drops everything after the '#', so a file
+written this way still reads back byte-for-byte in anything that skips
+comments, and READ-TIMESTAMP-COMMENT hands the time back to the decoder
+rather than letting it invent one."
+  (format nil "~A~@[  # ~A~]"
+          (hex-string (ud18:reading-raw r) :separator " ") timestamp))
+
 (defun emit-reading (stream r format &key timestamp mac)
   "Write one reading to STREAM in FORMAT (\"text\", \"jsonl\", \"csv\", \"hex\")."
   (write-string (cond ((string= format "jsonl") (reading-jsonl r :timestamp timestamp :mac mac))
                       ((string= format "csv")   (reading-csv   r :timestamp timestamp :mac mac))
-                      ((string= format "hex")   (hex-string (ud18:reading-raw r) :separator " "))
+                      ((string= format "hex")   (reading-hex   r :timestamp timestamp))
                       (t                        (reading-text  r :timestamp timestamp)))
                 stream)
   (terpri stream))

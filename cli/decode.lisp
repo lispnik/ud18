@@ -6,11 +6,11 @@
 ;;; on a Mac. Takes hex frames from --hex, from files, or from stdin: the
 ;;; `hex` output format of monitor/record round-trips straight back in here.
 
-(defun decode-one (hex fmt &key (verify t) (strict t))
+(defun decode-one (hex fmt &key (verify t) (strict t) timestamp)
   (let ((bytes (parse-hex-bytes hex)))
     (multiple-value-bind (r condition)
         (ud18:decode-frame-or-nil bytes :verify-checksum verify :strict strict)
-      (cond (r (emit-reading *standard-output* r fmt)
+      (cond (r (emit-reading *standard-output* r fmt :timestamp timestamp)
                ;; Return the reading, not whatever EMIT-READING happened to
                ;; return: the callers count on this to tally what decoded.
                r)
@@ -18,17 +18,31 @@
                              *error-output*)
                nil)))))
 
-(defun decode-stream (in fmt &key (verify t) (strict t))
+(defun decode-stream (in fmt &key (verify t) (strict t) utc)
   "Decode every non-blank line of IN as one hex frame. Lines from a `hex`
-capture may carry spaces; anything after a '#' is a comment."
+capture may carry spaces; anything after a '#' is a comment.
+
+The comment is not only discarded, though. `record --format hex` parks the
+arrival time there, so a capture written by this tool decodes with the time
+the meter was actually read at rather than the time someone got around to
+decoding it. Captures made before that -- or by anything else -- have no
+comment, and those readings come out with an empty timestamp, which is the
+honest answer.
+
+UTC restates whatever the capture recorded as Zulu time. A recording made
+in one zone is routinely read in another, and the comparison that matters
+-- this run against that one -- is the one a mix of local offsets makes
+hardest."
   (let ((n 0))
     (loop for line = (read-line in nil nil)
           while line
           do (let* ((hash (position #\# line))
                     (text (string-trim '(#\Space #\Tab #\Return)
-                                       (if hash (subseq line 0 hash) line))))
+                                       (if hash (subseq line 0 hash) line)))
+                    (ts (when hash (iso-timestamp-p (subseq line (1+ hash))))))
                (when (plusp (length text))
-                 (when (decode-one text fmt :verify verify :strict strict)
+                 (when (decode-one text fmt :verify verify :strict strict
+                                            :timestamp (present-timestamp ts :utc utc))
                    (incf n)))))
     n))
 
@@ -37,6 +51,7 @@ capture may carry spaces; anything after a '#' is a comment."
          (hex    (clingon:getopt cmd :hex))
          (verify (not (clingon:getopt cmd :no-verify)))
          (strict (not (clingon:getopt cmd :any-device)))
+         (utc    (clingon:getopt cmd :utc))
          (files  (clingon:command-arguments cmd))
          (n 0))
     (when (string= fmt "csv")
@@ -47,9 +62,10 @@ capture may carry spaces; anything after a '#' is a comment."
        (dolist (f files)
          (with-open-file (in f :if-does-not-exist nil)
            (if in
-               (incf n (decode-stream in fmt :verify verify :strict strict))
+               (incf n (decode-stream in fmt :verify verify :strict strict :utc utc))
                (format *error-output* "~&cannot open ~A~%" f)))))
-      (t (incf n (decode-stream *standard-input* fmt :verify verify :strict strict))))
+      (t (incf n (decode-stream *standard-input* fmt
+                                :verify verify :strict strict :utc utc))))
     (force-output)
     ;; Nothing decoded is a failure worth an exit code: `decode` is the piece
     ;; that ends up inside shell pipelines, where a silent success on a file
@@ -67,6 +83,7 @@ capture may carry spaces; anything after a '#' is a comment."
                         :description "Output format"
                         :long-name "format" :items '("text" "jsonl" "csv" "hex")
                         :initial-value "text" :key :format)
+   (utc/option)
    (clingon:make-option :flag
                         :description "Decode frames whose checksum does not match"
                         :long-name "no-verify" :key :no-verify)
